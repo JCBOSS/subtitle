@@ -1,0 +1,36 @@
+{
+  "accounts": [
+    {
+      "id": "nanzhu",
+      "name": "南烛",
+      "home_dir": "/data/chunjiang/VideoEdit/subtitle/Audio/nanzhu",
+      "output_dir": "/data/chunjiang/VideoEdit/subtitle/Audio/nanzhu_output",
+      "allowed_formats": ["mp4", "avi", "mov", "mkv"],
+      "max_video_size_mb": 500,
+      "whisper_model": "small",
+      "enabled": true
+    },
+    {
+      "id": "wangxing",
+      "name": "王兴",
+      "home_dir": "/data/chunjiang/VideoEdit/subtitle/Audio/wangxing",
+      "output_dir": "/data/chunjiang/VideoEdit/subtitle/Audio/wangxing_output",
+      "allowed_formats": ["mp4", "avi", "mov", "mkv"],
+      "max_video_size_mb": 500,
+      "whisper_model": "small",
+      "enabled": true
+    },
+    {
+      "id": "admin",
+      "name": "管理员",
+      "home_dir": "/data/chunjiang/VideoEdit/subtitle/Audio/admin",
+      "output_dir": "/data/chunjiang/VideoEdit/subtitle/Audio/admin_output",
+      "allowed_formats": ["mp4", "avi", "mov", "mkv", "flv", "wmv"],
+      "max_video_size_mb": 2000,
+      "whisper_model": "medium",
+      "enabled": true
+    }
+  ],
+  "default_account": "nanzhu",
+  "isolation_mode": true
+}
