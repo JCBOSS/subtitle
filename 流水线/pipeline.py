@@ -58,69 +58,111 @@ class SubtitlePipeline:
         return True
 
     def step1_extract_audio(self, video_path: str) -> str:
-        """Step 1: 提取音频 (使用imageio-ffmpeg，CPU模式)"""
-        print("\n📥 Step 1: 提取音频...")
+        """Step 1: 提取音频并降噪 (使用imageio-ffmpeg，CPU模式)"""
+        print("\n📥 Step 1: 提取音频 + 降噪...")
         video_path = Path(video_path)
         audio_path = self.work_dir / "audio.wav"
+        denoised_path = self.work_dir / "audio_denoised.wav"
 
         import imageio_ffmpeg
         ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
 
-        cmd = [
+        # 先提取音频
+        cmd_extract = [
             ffmpeg_path, '-i', str(video_path),
             '-vn', '-acodec', 'pcm_s16le',
             '-ar', '16000', '-ac', '1',
             '-y', str(audio_path)
         ]
 
-        print(f"  使用FFmpeg: {ffmpeg_path}")
-        print(f"  命令: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
+        print(f"  提取音频...")
+        result = subprocess.run(cmd_extract, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError(f"音频提取失败: {result.stderr}")
 
-        print(f"  ✅ 音频已保存: {audio_path}")
-        self.results['audio_path'] = str(audio_path)
-        return str(audio_path)
-
-    def step2_transcribe(self, audio_path: str, model_size: str = "small") -> str:
-        """Step 2: Whisper语音识别 (使用CLI避免内存问题)"""
-        print("\n🎤 Step 2: Whisper语音识别...")
-        print(f"  ⚠️ 使用 {model_size} 模型 (CPU模式)")
-
-        import subprocess
-
-        output_dir = self.work_dir
-        cmd = [
-            'whisper', audio_path,
-            '--model', model_size,
-            '--device', 'cpu',
-            '--output_dir', str(output_dir),
-            '--output_format', 'srt',
-            '--fp16', 'False',
-            '--beam_size', '1',
-            '--best_of', '1'
+        # 使用ffmpeg afftdn降噪 (noise floor = -25dB)
+        print(f"  降噪处理...")
+        cmd_denoise = [
+            ffmpeg_path, '-i', str(audio_path),
+            '-af', 'afftdn=nf=-25',
+            '-y', str(denoised_path)
         ]
+        result = subprocess.run(cmd_denoise, capture_output=True, text=True)
+        if result.returncode == 0:
+            print(f"  ✅ 降噪完成")
+            self.results['audio_path'] = str(denoised_path)
+        else:
+            # 降噪失败，使用原始音频
+            print(f"  ⚠️ 降噪失败，使用原始音频")
+            self.results['audio_path'] = str(audio_path)
 
-        print(f"  命令: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        print(f"  ✅ 音频已保存: {self.results['audio_path']}")
+        return self.results['audio_path']
 
-        if result.returncode != 0:
-            raise RuntimeError(f"Whisper识别失败: {result.stderr}")
+    def step2_transcribe(self, audio_path: str, model_size: str = "tiny") -> str:
+        """Step 2: 语音识别 (默认使用讯飞API，若失败则用Whisper)"""
+        print("\n🎤 Step 2: 语音识别...")
 
-        # 查找生成的srt文件
-        srt_files = list(output_dir.glob("*.srt"))
-        if not srt_files:
-            raise RuntimeError("Whisper未生成字幕文件")
+        # 优先使用讯飞API
+        try:
+            print("  🔄 尝试使用讯飞语音识别API...")
 
-        # 重命名为标准名称
-        subtitle_path = output_dir / "raw_subtitles.srt"
-        srt_files[0].rename(subtitle_path)
+            # 确保是WAV格式
+            import shutil
+            audio_wav = self.work_dir / "temp_audio.wav"
+            if not audio_path.endswith('.wav'):
+                # 转换格式
+                import imageio_ffmpeg
+                ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+                subprocess.run([ffmpeg_path, '-i', audio_path, '-vn', '-acodec', 'pcm_s16le',
+                               '-ar', '16000', '-ac', '1', '-y', str(audio_wav)],
+                             capture_output=True, check=True)
+                audio_path = str(audio_wav)
 
-        print(f"  ✅ 原始字幕已保存: {subtitle_path}")
-        self.results['raw_subtitle_path'] = str(subtitle_path)
-        return str(subtitle_path)
+            # 调用讯飞API
+            sys.path.insert(0, str(Path(__file__).parent.parent / 'Ifasr_llm'))
+            from iflytek_asr import transcribe_with_iflytek
+
+            srt_content, segments = transcribe_with_iflytek(audio_path)
+            subtitle_path = self.work_dir / "raw_subtitles.srt"
+
+            with open(subtitle_path, 'w', encoding='utf-8') as f:
+                f.write(srt_content)
+
+            print(f"  ✅ 讯飞识别成功: {len(segments)} 段字幕")
+            self.results['raw_subtitle_path'] = str(subtitle_path)
+            return str(subtitle_path)
+
+        except Exception as e:
+            print(f"  ⚠️ 讯飞API失败: {e}")
+            print("  🔄 回退到Whisper...")
+
+            # 回退到Whisper
+            import whisper
+            import gc
+            gc.collect()
+
+            model = whisper.load_model(model_size, device="cpu")
+            audio = whisper.load_audio(audio_path)
+
+            result = model.transcribe(
+                audio,
+                language='zh',
+                beam_size=5,
+                best_of=5,
+                fp16=False,
+                condition_on_previous_text=False,
+                verbose=False
+            )
+
+            subtitle_path = self.work_dir / "raw_subtitles.srt"
+            srt_content = self._generate_srt(result['segments'])
+            with open(subtitle_path, 'w', encoding='utf-8') as f:
+                f.write(srt_content)
+
+            print(f"  ✅ Whisper识别完成")
+            self.results['raw_subtitle_path'] = str(subtitle_path)
+            return str(subtitle_path)
 
     def _generate_srt(self, segments) -> str:
         """生成SRT格式字幕"""
